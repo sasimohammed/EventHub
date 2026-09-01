@@ -1,0 +1,218 @@
+services:
+
+  # ================================
+  # Infrastructure
+  # ================================
+
+  postgres:
+    image: postgres:16
+    container_name: eventhub-postgres
+    environment:
+      POSTGRES_USER: eventhub
+      POSTGRES_PASSWORD: eventhub
+      POSTGRES_DB: eventhub_auth
+    volumes:
+      - eventhub-postgres-data:/var/lib/postgresql/data
+    networks:
+      - eventhub-net
+
+  mongo:
+    image: mongo:7
+    container_name: eventhub-mongo
+    volumes:
+      - eventhub-mongo-data:/data/db
+    networks:
+      - eventhub-net
+
+  mysql:
+    image: mysql:8
+    container_name: eventhub-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: eventhub_catalog
+    volumes:
+      - eventhub-mysql-data:/var/lib/mysql
+    networks:
+      - eventhub-net
+
+  redis:
+    image: redis:7
+    container_name: eventhub-redis
+    volumes:
+      - eventhub-redis-data:/data
+    networks:
+      - eventhub-net
+
+  rabbitmq:
+    image: rabbitmq:3
+    container_name: eventhub-rabbitmq
+    volumes:
+      - eventhub-rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - eventhub-net
+
+  # ================================
+  # AI Service
+  # ================================
+
+  ai:
+    build:
+      context: ./services/ai-insight-service-python
+    container_name: eventhub-ai
+    ports:
+      - "8084:8084"
+    environment:
+      PORT: 8084
+      OLLAMA_URL: http://host.containers.internal:11434
+      OLLAMA_MODEL: llama3.2:1b
+    networks:
+      - eventhub-net
+
+  # ================================
+  # Auth Service
+  # ================================
+
+  auth:
+    build:
+      context: ./services/auth-service-node
+    container_name: eventhub-auth
+    ports:
+      - "8082:8082"
+    environment:
+      PORT: 8082
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: eventhub
+      PGPASSWORD: eventhub
+      PGDATABASE: eventhub_auth
+      JWT_SECRET: change-me-in-production
+    depends_on:
+      - postgres
+    networks:
+      - eventhub-net
+
+  # ================================
+  # Catalog Service
+  # ================================
+
+  catalog:
+    build:
+      context: ./services/legacy-catalog-java
+    container_name: eventhub-catalog
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/eventhub_catalog
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: rootpassword
+    depends_on:
+      - mysql
+    networks:
+      - eventhub-net
+
+  # ================================
+  # Booking Service
+  # ================================
+
+  booking:
+    build:
+      context: ./services/booking-service-python
+    container_name: eventhub-booking
+    ports:
+      - "8083:8083"
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: eventhub_bookings
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_QUEUE: bookings
+      AI_INSIGHT_URL: http://ai:8084
+    depends_on:
+      - mongo
+      - rabbitmq
+      - ai
+    networks:
+      - eventhub-net
+
+  # ================================
+  # Notification Worker
+  # ================================
+
+  notification:
+    build:
+      context: ./services/notification-worker-go
+    container_name: eventhub-notification
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_QUEUE: bookings
+    depends_on:
+      - rabbitmq
+    networks:
+      - eventhub-net
+
+  # ================================
+  # Analytics
+  # ================================
+
+  analytics:
+    build:
+      context: ./services/analytics-service-python
+    container_name: eventhub-analytics
+    ports:
+      - "8085:8085"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      SNAPSHOT_KEY: analytics:snapshot
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8085"
+    depends_on:
+      - redis
+      - booking
+      - catalog
+    networks:
+      - eventhub-net
+
+  # ================================
+  # Frontend
+  # ================================
+
+  frontend:
+    build:
+      context: frontend
+    container_name: eventhub-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - auth
+      - catalog
+      - booking
+      - ai
+      - analytics
+    networks:
+      - eventhub-net
+
+
+# ================================
+# Networks
+# ================================
+
+networks:
+  eventhub-net:
+    name: eventhub-net
+    driver: bridge
+
+
+# ================================
+# Volumes
+# ================================
+
+volumes:
+  eventhub-postgres-data:
+  eventhub-mongo-data:
+  eventhub-mysql-data:
+  eventhub-redis-data:
+  eventhub-rabbitmq-data:

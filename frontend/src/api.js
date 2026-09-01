@@ -1,67 +1,114 @@
-const AUTH_URL = 'http://localhost:8082';
-const CATALOG_URL = 'http://localhost:8081';
-const BOOKING_URL = 'http://localhost:8083';
-const AI_URL = 'http://localhost:8084';
-const ANALYTICS_URL = 'http://localhost:8085';
+async function request(path, options = {}) {
+    const token = localStorage.getItem('eventhub_token');
 
-async function request(url, options = {}) {
-  const res = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-    ...options,
-  });
+    const headers = {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers || {}),
+    };
 
-  if (!res.ok) {
-    throw new Error(
-        `${options.method || 'GET'} ${url} failed: ${res.status}`
-    );
-  }
+    const response = await fetch(path, {
+        ...options,
+        headers,
+    });
 
-  return res.json();
+    let data = null;
+
+    try {
+        data = await response.json();
+    } catch {
+        // Some responses may not contain JSON.
+    }
+
+    if (!response.ok) {
+        const message =
+            data?.error ||
+            data?.detail ||
+            `Request failed (${response.status})`;
+
+        throw new Error(message);
+    }
+
+    return data;
 }
 
 export const api = {
-  // Auth Service - 8082
-  login: (email, password) =>
-      request(`${AUTH_URL}/api/auth/login`, {
-        method: 'POST',
-        body: JSON.stringify({ email, password }),
-      }),
+    // =========================
+    // AUTH - 8082
+    // =========================
 
-  register: (email, password) =>
-      request(`${AUTH_URL}/api/auth/register`, {
-        method: 'POST',
-        body: JSON.stringify({ email, password }),
-      }),
+    register: (email, password) =>
+        request('/api/auth/register', {
+            method: 'POST',
+            body: JSON.stringify({
+                email,
+                password,
+            }),
+        }),
 
-  // Catalog Service - 8081
-  catalog: () =>
-      request(`${CATALOG_URL}/api/catalog`),
+    login: (email, password) =>
+        request('/api/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({
+                email,
+                password,
+            }),
+        }),
 
-  // Booking Service - 8083
-  book: (userId, eventId) =>
-      request(`${BOOKING_URL}/api/bookings`, {
-        method: 'POST',
-        body: JSON.stringify({ userId, eventId }),
-      }),
+    // =========================
+    // CATALOG - 8081
+    // =========================
 
-  // AI Insight Service - 8084
-  analyze: (text) =>
-      request(`${AI_URL}/api/analyze`, {
-        method: 'POST',
-        body: JSON.stringify({ text }),
-      }),
+    catalog: () =>
+        request('/api/catalog'),
 
-  // Booking Service - 8083
-  review: (bookingId, text) =>
-      request(`${BOOKING_URL}/api/bookings/${bookingId}/review`, {
-        method: 'POST',
-        body: JSON.stringify({ text }),
-      }),
+    // =========================
+    // BOOKING - 8083
+    // =========================
 
-  // Analytics Service - 8085
-  analyticsSummary: () =>
-      request(`${ANALYTICS_URL}/api/analytics/summary`),
+    book: (userId, eventId) =>
+        request('/api/bookings', {
+            method: 'POST',
+            body: JSON.stringify({
+                userId,
+                eventId,
+            }),
+        }),
+
+    bookings: () =>
+        request('/api/bookings'),
+
+    // =========================
+    // REVIEWS - 8083
+    // =========================
+
+    review: (bookingId, text) =>
+        request(`/api/bookings/${bookingId}/review`, {
+            method: 'POST',
+            body: JSON.stringify({
+                text,
+            }),
+        }),
+
+    reviews: () =>
+        request('/api/reviews'),
+
+    // =========================
+    // AI INSIGHT - 8084
+    // =========================
+
+    analyze: (text) =>
+        request('/api/analyze', {
+            method: 'POST',
+            body: JSON.stringify({
+                text,
+            }),
+        }),
+
+    // =========================
+    // ANALYTICS - 8085
+    // =========================
+
+    analyticsSummary: () =>
+        request('/api/analytics/summary'),
 };

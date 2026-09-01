@@ -1,0 +1,267 @@
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: eventhub-postgres
+    environment:
+      POSTGRES_USER: eventhub
+      POSTGRES_PASSWORD: eventhub
+      POSTGRES_DB: eventhub_auth
+    volumes:
+      - eventhub-postgres-data:/var/lib/postgresql/data
+    networks:
+      - eventhub-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventhub -d eventhub_auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    container_name: eventhub-mongo
+    volumes:
+      - eventhub-mongo-data:/data/db
+    networks:
+      - eventhub-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8
+    container_name: eventhub-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: eventhub_catalog
+    volumes:
+      - eventhub-mysql-data:/var/lib/mysql
+    networks:
+      - eventhub-net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -prootpassword"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7
+    container_name: eventhub-redis
+    volumes:
+      - eventhub-redis-data:/data
+    networks:
+      - eventhub-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3
+    container_name: eventhub-rabbitmq
+    volumes:
+      - eventhub-rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - eventhub-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ai:
+    build:
+      context: ./services/ai-insight-service-python
+      dockerfile: Containerfile
+    image: eventhub-ai
+    container_name: eventhub-ai
+    environment:
+      PORT: 8084
+      OLLAMA_URL: http://host.containers.internal:11434
+      OLLAMA_MODEL: llama3.2:1b
+    ports:
+      - "8084:8084"
+    networks:
+      - eventhub-net
+    restart: unless-stopped
+
+  auth:
+    build:
+      context: ./services/auth-service-node
+      dockerfile: Containerfile
+    image: eventhub-auth
+    container_name: eventhub-auth
+    environment:
+      PORT: 8082
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: eventhub
+      PGPASSWORD: eventhub
+      PGDATABASE: eventhub_auth
+      JWT_SECRET: change-me-in-production
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - eventhub-net
+    restart: unless-stopped
+
+  catalog:
+    build:
+      context: ./services/legacy-catalog-java
+      dockerfile: Containerfile
+    image: eventhub-catalog
+    container_name: eventhub-catalog
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/eventhub_catalog
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: rootpassword
+    ports:
+      - "8081:8081"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - eventhub-net
+    restart: unless-stopped
+
+  booking:
+    build:
+      context: ./services/booking-service-python
+      dockerfile: Containerfile
+    image: eventhub-booking
+    container_name: eventhub-booking
+    environment:
+      PORT: 8083
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: eventhub_bookings
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_QUEUE: bookings
+      AI_INSIGHT_URL: http://ai:8084
+    ports:
+      - "8083:8083"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      ai:
+        condition: service_started
+    networks:
+      - eventhub-net
+    restart: unless-stopped
+
+  notification:
+    build:
+      context: ./services/notification-worker-go
+      dockerfile: Containerfile
+    image: eventhub-notification
+    container_name: eventhub-notification
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_QUEUE: bookings
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - eventhub-net
+    restart: unless-stopped
+
+  analytics:
+    build:
+      context: ./services/analytics-service-python
+      dockerfile: Containerfile
+    image: eventhub-analytics
+    container_name: eventhub-analytics
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      BOOKING_SERVICE_URL: http://booking:8083
+      CATALOG_SERVICE_URL: http://catalog:8081
+      SNAPSHOT_KEY: analytics:snapshot
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8085"
+    ports:
+      - "8085:8085"
+    depends_on:
+      redis:
+        condition: service_healthy
+      booking:
+        condition: service_started
+      catalog:
+        condition: service_started
+    networks:
+      - eventhub-net
+    restart: unless-stopped
+
+  analytics-job:
+    build:
+      context: ./services/analytics-service-python
+      dockerfile: Containerfile
+    image: eventhub-analytics
+    container_name: eventhub-analytics-job
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      BOOKING_SERVICE_URL: http://booking:8083
+      CATALOG_SERVICE_URL: http://catalog:8081
+      SNAPSHOT_KEY: analytics:snapshot
+    command:
+      - python
+      - job.py
+    depends_on:
+      redis:
+        condition: service_healthy
+      booking:
+        condition: service_started
+      catalog:
+        condition: service_started
+    networks:
+      - eventhub-net
+    restart: "no"
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Containerfile
+    image: eventhub-frontend
+    container_name: eventhub-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - auth
+      - catalog
+      - booking
+      - ai
+      - analytics
+    networks:
+      - eventhub-net
+    restart: unless-stopped
+
+networks:
+  eventhub-net:
+    name: eventhub-net
+
+volumes:
+  eventhub-postgres-data:
+    name: eventhub-postgres-data
+
+  eventhub-mongo-data:
+    name: eventhub-mongo-data
+
+  eventhub-mysql-data:
+    name: eventhub-mysql-data
+
+  eventhub-redis-data:
+    name: eventhub-redis-data
+
+  eventhub-rabbitmq-data:
+    name: eventhub-rabbitmq-data
