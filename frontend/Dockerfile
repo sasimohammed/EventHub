@@ -1,4 +1,3 @@
-# Build stage
 FROM node:20-alpine AS build
 
 WORKDIR /app
@@ -9,17 +8,15 @@ RUN npm ci
 
 COPY . .
 
-RUN npm run build
+RUN chmod +x node_modules/.bin/vite && npx vite build
 
 
-# Production stage
 FROM nginx:alpine
 
 COPY --from=build /app/dist /usr/share/nginx/html
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# OpenShift runs containers as non-root
 RUN mkdir -p /var/cache/nginx/client_temp \
     /var/cache/nginx/proxy_temp \
     /var/cache/nginx/fastcgi_temp \
